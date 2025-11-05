@@ -1,35 +1,98 @@
 import React, { useState } from 'react';
+import { DndContext, useSensor, useSensors, PointerSensor } from '@dnd-kit/core';
 import ChartRenderer from './ChartRenderer';
-import transformWeatherData from '../utils/transformWeatherData';
+import { DraggableKPI, DraggableChartType, DroppableWrapper } from './DraggableItems';
+import { getKpiData } from '../services/kpiService';
+// Removed unused import
+import './WidgetStyles.css';
+
+const availableChartTypes = [
+  { type: 'line', label: 'Line Chart' },
+  { type: 'bar', label: 'Bar Chart' },
+  { type: 'pie', label: 'Pie Chart' }
+];
+
+const availableKpis = [
+  { id: 'KPI1', type: 'Sales' },
+  { id: 'KPI2', type: 'Revenue' },
+  { id: 'KPI3', type: 'Distribution' }
+];
 
 export default function WidgetBuilder() {
-  const [chartType, setChartType] = useState('line');
-  const [lat, setLat] = useState('40.71');
-  const [lon, setLon] = useState('-74.01');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [data, setData] = useState(null);
+  const [canvasItems, setCanvasItems] = useState([]);
+  const [charts, setCharts] = useState([]);
 
-  const fetchData = async () => {
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    })
+  );
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    
+    if (!over) return;
+    
+    // Handle dropping in canvas area
+    if (over.id === 'canvas') {
+      const itemId = active.id;
+      const isKpi = itemId.startsWith('kpi-');
+      
+      const newItem = {
+        id: isKpi ? itemId.replace('kpi-', '') : itemId.replace('chart-', ''),
+        type: isKpi ? 'kpi' : 'chart',
+        // Store the actual chart type if it's a chart
+        chartType: !isKpi ? itemId.replace('chart-', '') : undefined
+      };
+
+      setCanvasItems(prev => [...prev, newItem]);
+    }
+  };
+
+  const handleGenerate = async () => {
     setLoading(true);
     setError(null);
     try {
-      const now = new Date();
-      const start = now.toISOString().slice(0, 10);
-      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
-        .toISOString()
-        .slice(0, 10);
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(
-        lat
-      )}&longitude=${encodeURIComponent(
-        lon
-      )}&hourly=temperature_2m,precipitation&start_date=${start}&end_date=${tomorrow}&timezone=UTC`;
+      const results = [];
+      const kpis = canvasItems.filter(item => item.type === 'kpi');
+      const chartTypes = canvasItems.filter(item => item.type === 'chart');
 
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Failed to fetch weather data');
-      const json = await res.json();
-      const transformed = transformWeatherData(json);
-      setData(transformed);
+      // Generate a chart for each KPI, using available chart types
+      for (let i = 0; i < kpis.length; i++) {
+        const kpi = kpis[i];
+        const chartType = chartTypes[i] || chartTypes[0];
+        if (!chartType) continue;
+
+        const kpiData = await getKpiData(kpi.id);
+        
+        // Use the stored chart type from the dropped item
+        const chartTypeConfig = availableChartTypes.find(t => t.type === chartType.chartType) || availableChartTypes[0];
+
+        results.push({
+          id: `${kpi.id}-${chartType.id}`,
+          type: chartTypeConfig.type, // This ensures we pass the correct chart type
+          data: kpiData,
+          options: {
+            responsive: true,
+            plugins: {
+              legend: {
+                position: 'top',
+                display: true // Always show legend for better visibility
+              },
+              title: {
+                display: true,
+                text: kpiData.title || `${kpi.id} Chart`
+              }
+            }
+          }
+        });
+      }
+
+      setCharts(results);
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -37,58 +100,77 @@ export default function WidgetBuilder() {
     }
   };
 
-  const chartData =
-    chartType === 'pie' ? data && data.pieData : data && { labels: data.labels, datasets: data.datasets };
-
-  const options =
-    chartType === 'line'
-      ? {
-          responsive: true,
-          interaction: { mode: 'index', intersect: false },
-          scales: {
-            y: { type: 'linear', position: 'left', title: { display: true, text: 'Temperature (°C)' } },
-            y1: {
-              type: 'linear',
-              position: 'right',
-              grid: { drawOnChartArea: false },
-              title: { display: true, text: 'Precipitation (mm)' }
-            }
-          }
-        }
-      : { responsive: true };
-
   return (
-    <div style={{ maxWidth: 900, margin: '20px auto', padding: 20, border: '1px solid #eee', borderRadius: 8 }}>
-      <h3>Custom Widget Builder</h3>
-      <div style={{ display: 'flex', gap: 10, marginBottom: 10, alignItems: 'center' }}>
-        <label>
-          Chart:
-          <select value={chartType} onChange={e => setChartType(e.target.value)} style={{ marginLeft: 6 }}>
-            <option value="line">Line (Temperature + Precip)</option>
-            <option value="bar">Bar (Temperature + Precip)</option>
-            <option value="pie">Pie (Avg Temp vs Total Precip)</option>
-          </select>
-        </label>
-        <label>
-          Latitude:
-          <input value={lat} onChange={e => setLat(e.target.value)} style={{ marginLeft: 6, width: 110 }} />
-        </label>
-        <label>
-          Longitude:
-          <input value={lon} onChange={e => setLon(e.target.value)} style={{ marginLeft: 6, width: 110 }} />
-        </label>
-        <button onClick={fetchData} disabled={loading} style={{ marginLeft: 10 }}>
-          {loading ? 'Loading...' : 'Fetch & Render'}
-        </button>
+    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <div className="widget-builder">
+        <div className="widget-panels">
+          {/* KPIs Panel */}
+          <div className="panel">
+            <h3>API List</h3>
+            <DroppableWrapper id="kpis">
+              {availableKpis.map((kpi, index) => (
+                <DraggableKPI key={kpi.id} kpi={kpi} index={index} />
+              ))}
+            </DroppableWrapper>
+          </div>
+
+          {/* Chart Types Panel */}
+          <div className="panel">
+            <h3>UI Widgets List</h3>
+            <DroppableWrapper id="charts">
+              {availableChartTypes.map((chart, index) => (
+                <DraggableChartType key={chart.type} chart={chart} index={index} />
+              ))}
+            </DroppableWrapper>
+          </div>
+
+          {/* Canvas Area */}
+          <div className="panel canvas-panel">
+            <h3>Canvas for Dashboard</h3>
+            <DroppableWrapper id="canvas">
+              {canvasItems.map((item, index) => (
+                item.type === 'kpi' ? (
+                  <DraggableKPI 
+                    key={item.id} 
+                    kpi={{ id: item.id, type: 'canvas-item' }} 
+                    index={index}
+                  />
+                ) : (
+                  <DraggableChartType
+                    key={item.id}
+                    chart={{ type: item.id, label: 'Chart' }}
+                    index={index}
+                  />
+                )
+              ))}
+            </DroppableWrapper>
+            <button
+              className="generate-btn"
+              onClick={handleGenerate}
+              disabled={loading || canvasItems.length === 0}
+            >
+              {loading ? 'Generating...' : 'Generate Dynamic Layout'}
+            </button>
+          </div>
+        </div>
+
+        {error && <div className="error">{error}</div>}
+
+        {/* Generated Charts */}
+        {charts.length > 0 && (
+          <div className="canvas-grid">
+            {charts.map(chart => (
+              <div key={chart.id} className="chart-container">
+                <ChartRenderer
+                  type={chart.type}
+                  data={chart.data}
+                  options={chart.options}
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-
-      {error && <div style={{ color: 'red' }}>{error}</div>}
-
-      {chartData ? (
-        <ChartRenderer type={chartType} data={chartData} options={options} />
-      ) : (
-        <div>Click "Fetch & Render" to load data.</div>
-      )}
-    </div>
+    </DndContext>
   );
 }
